@@ -1,4 +1,5 @@
 import type { ExtensionCredential, RuntimeMessage } from "./shared";
+import { generateTotp } from "./totp";
 
 const BUTTON_CLASS = "np-fill-button";
 
@@ -6,22 +7,26 @@ mountFillButtons();
 document.addEventListener("submit", captureSubmittedCredential, true);
 
 function mountFillButtons() {
-  const passwordInputs = Array.from(document.querySelectorAll<HTMLInputElement>("input[type='password']"));
-  passwordInputs.forEach((passwordInput) => {
-    if (passwordInput.dataset.npMounted === "true") return;
-    passwordInput.dataset.npMounted = "true";
+  const fillTargets = [
+    ...Array.from(document.querySelectorAll<HTMLInputElement>("input[type='password']")),
+    ...Array.from(document.querySelectorAll<HTMLInputElement>("input")).filter(isOtpInput),
+  ];
+
+  fillTargets.forEach((input) => {
+    if (input.dataset.npMounted === "true") return;
+    input.dataset.npMounted = "true";
 
     const button = document.createElement("button");
     button.type = "button";
     button.className = BUTTON_CLASS;
     button.textContent = "NoPassword";
-    button.addEventListener("click", () => fillForm(passwordInput));
+    button.addEventListener("click", () => fillForm(input));
 
-    passwordInput.insertAdjacentElement("afterend", button);
+    input.insertAdjacentElement("afterend", button);
   });
 }
 
-async function fillForm(passwordInput: HTMLInputElement) {
+async function fillForm(input: HTMLInputElement) {
   const response = await sendMessage<{ items: ExtensionCredential[] }>({
     type: "GET_CREDENTIALS_FOR_URL",
     url: location.href,
@@ -29,10 +34,12 @@ async function fillForm(passwordInput: HTMLInputElement) {
   const item = response.items[0];
   if (!item) return;
 
-  const form = passwordInput.form ?? document;
+  const form = input.form ?? document;
+  const passwordInput = form.querySelector<HTMLInputElement>("input[type='password']");
   const usernameInput = findUsernameInput(form);
   if (usernameInput) setInputValue(usernameInput, item.username);
-  setInputValue(passwordInput, item.password);
+  if (passwordInput) setInputValue(passwordInput, item.password);
+  await fillOtpInputs(form, item);
 }
 
 function captureSubmittedCredential(event: Event) {
@@ -59,6 +66,34 @@ function findUsernameInput(root: ParentNode): HTMLInputElement | null {
     root.querySelector<HTMLInputElement>("input[autocomplete='username']") ??
     root.querySelector<HTMLInputElement>("input[type='email']") ??
     root.querySelector<HTMLInputElement>("input[type='text']")
+  );
+}
+
+async function fillOtpInputs(root: ParentNode, item: ExtensionCredential) {
+  if (!item.otpSecret) return;
+  const totp = await generateTotp(item.otpSecret).catch(() => null);
+  if (!totp) return;
+
+  Array.from(root.querySelectorAll<HTMLInputElement>("input"))
+    .filter(isOtpInput)
+    .forEach((input) => setInputValue(input, totp.code));
+}
+
+function isOtpInput(input: HTMLInputElement): boolean {
+  const haystack = [
+    input.autocomplete,
+    input.name,
+    input.id,
+    input.placeholder,
+    input.ariaLabel,
+    input.getAttribute("inputmode") ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return (
+    input.autocomplete === "one-time-code" ||
+    /(?:otp|totp|mfa|2fa|two[- ]factor|one[- ]time|verification|auth.*code|security.*code)/.test(haystack)
   );
 }
 
@@ -94,4 +129,3 @@ document.documentElement.append(style);
 
 const observer = new MutationObserver(() => mountFillButtons());
 observer.observe(document.documentElement, { childList: true, subtree: true });
-

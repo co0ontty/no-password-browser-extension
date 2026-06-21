@@ -2,6 +2,7 @@ import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { Check, Fingerprint, KeyRound, Plus, Save, Search, Settings, ShieldCheck, Trash2 } from "lucide-react";
 import type { ExtensionCredential, ExtensionSettings, RuntimeMessage } from "./shared";
+import { generateTotp } from "./totp";
 import "./popup.css";
 
 function Popup() {
@@ -10,6 +11,7 @@ function Popup() {
   const [selectedId, setSelectedId] = useState("");
   const [settings, setSettings] = useState<ExtensionSettings>({ serverUrl: "http://127.0.0.1:8080" });
   const [bridgeAvailable, setBridgeAvailable] = useState(false);
+  const [otpCode, setOtpCode] = useState<{ code: string; remaining: number } | null>(null);
   const selected = items.find((item) => item.id === selectedId) ?? items[0];
 
   useEffect(() => {
@@ -22,6 +24,24 @@ function Popup() {
       setBridgeAvailable(response.available),
     );
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const updateOtp = async () => {
+      if (!selected?.otpSecret) {
+        setOtpCode(null);
+        return;
+      }
+      const next = await generateTotp(selected.otpSecret).catch(() => null);
+      if (!cancelled) setOtpCode(next);
+    };
+    void updateOtp();
+    const handle = window.setInterval(updateOtp, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [selected?.id, selected?.otpSecret]);
 
   const filtered = useMemo(() => {
     const needle = query.toLowerCase();
@@ -37,6 +57,7 @@ function Popup() {
       title: String(form.get("title") ?? ""),
       username: String(form.get("username") ?? ""),
       password: String(form.get("password") ?? ""),
+      otpSecret: String(form.get("otpSecret") ?? ""),
       url: String(form.get("url") ?? ""),
       updatedAt: Date.now(),
     };
@@ -59,6 +80,7 @@ function Popup() {
       title: "New Login",
       username: "",
       password: "",
+      otpSecret: "",
       url: "https://",
       updatedAt: Date.now(),
     };
@@ -106,6 +128,18 @@ function Popup() {
               <input name="url" defaultValue={selected.url} />
               <input name="username" defaultValue={selected.username} />
               <input name="password" defaultValue={selected.password} />
+              <input name="otpSecret" defaultValue={selected.otpSecret ?? ""} placeholder="OTP secret or otpauth:// URI" />
+              <div className="otp-card">
+                <span>{otpCode?.code ?? "OTP"}</span>
+                <button
+                  type="button"
+                  disabled={!otpCode}
+                  title="Copy OTP"
+                  onClick={() => otpCode && navigator.clipboard.writeText(otpCode.code)}
+                >
+                  {otpCode ? `${otpCode.remaining}s` : "--"}
+                </button>
+              </div>
               <button className="primary-action" type="submit">
                 <Save size={16} />
                 Save
@@ -141,4 +175,3 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <Popup />
   </React.StrictMode>,
 );
-

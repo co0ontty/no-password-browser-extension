@@ -3,6 +3,7 @@ export type ExtensionCredential = {
   title: string;
   username: string;
   password: string;
+  otpSecret?: string;
   url: string;
   updatedAt: number;
 };
@@ -36,4 +37,3 @@ export function itemMatchesUrl(item: ExtensionCredential, url: string): boolean 
   const targetHost = hostFromUrl(url);
   return Boolean(itemHost && targetHost && (targetHost === itemHost || targetHost.endsWith(`.${itemHost}`)));
 }
-

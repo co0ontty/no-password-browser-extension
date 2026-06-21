@@ -17,6 +17,7 @@ chrome.runtime.onInstalled.addListener(() => {
             title: "GitHub",
             username: "alex@example.com",
             password: "Z8q!uQ4p@qN7vL2s",
+            otpSecret: "JBSWY3DPEHPK3PXP",
             url: "https://github.com",
             updatedAt: Date.now(),
           },
@@ -85,4 +86,3 @@ async function saveSettings(settings: ExtensionSettings): Promise<ExtensionSetti
   await chrome.storage.local.set({ [STORAGE_SETTINGS_KEY]: settings });
   return settings;
 }
-
