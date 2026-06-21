@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "NoPassword",
+  "description": "Self-hosted encrypted password manager extension",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "NoPassword",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["assets/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["storage", "activeTab", "scripting"],
+  "optional_permissions": ["webAuthenticationProxy"],
+  "host_permissions": ["<all_urls>"]
+}
+
