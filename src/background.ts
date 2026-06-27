@@ -5,7 +5,10 @@ import {
   STORAGE_ITEMS_KEY,
   STORAGE_SETTINGS_KEY,
   itemMatchesUrl,
+  sortItemsForUrl,
 } from "./shared";
+
+const stagedCredentials = new Map<number, ExtensionCredential>();
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.local.get([STORAGE_ITEMS_KEY, STORAGE_SETTINGS_KEY]).then((result) => {
@@ -35,22 +38,28 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
-  void handleMessage(message)
+  void handleMessage(message, _sender)
     .then(sendResponse)
     .catch((error) => sendResponse({ error: error instanceof Error ? error.message : "Unknown error" }));
   return true;
 });
 
-async function handleMessage(message: RuntimeMessage) {
+async function handleMessage(message: RuntimeMessage, sender: chrome.runtime.MessageSender) {
   switch (message.type) {
     case "GET_ALL":
       return { items: await getItems() };
     case "UPSERT_ITEM":
     case "SAVE_CREDENTIAL":
       return { items: await upsertItem(message.item) };
+    case "STAGE_CREDENTIAL":
+      return { item: stageCredential(message.item, sender) };
+    case "GET_STAGED_CREDENTIAL":
+      return { item: getStagedCredential(message.url, sender) };
+    case "DISCARD_STAGED_CREDENTIAL":
+      return { item: discardStagedCredential(message.id, sender) };
     case "GET_CREDENTIALS_FOR_URL": {
       const items = await getItems();
-      return { items: items.filter((item) => itemMatchesUrl(item, message.url)) };
+      return { items: sortItemsForUrl(items, message.url) };
     }
     case "GET_SETTINGS":
       return { settings: await getSettings() };
@@ -63,6 +72,29 @@ async function handleMessage(message: RuntimeMessage) {
     default:
       return {};
   }
+}
+
+function stageCredential(item: ExtensionCredential, sender: chrome.runtime.MessageSender): ExtensionCredential | null {
+  const tabId = sender.tab?.id;
+  if (typeof tabId !== "number") return null;
+  stagedCredentials.set(tabId, item);
+  return item;
+}
+
+function getStagedCredential(url: string, sender: chrome.runtime.MessageSender): ExtensionCredential | null {
+  const tabId = sender.tab?.id;
+  if (typeof tabId !== "number") return null;
+  const item = stagedCredentials.get(tabId);
+  if (!item || !itemMatchesUrl(item, url)) return null;
+  return item;
+}
+
+function discardStagedCredential(id: string, sender: chrome.runtime.MessageSender): null {
+  const tabId = sender.tab?.id;
+  if (typeof tabId !== "number") return null;
+  const item = stagedCredentials.get(tabId);
+  if (!item || item.id === id) stagedCredentials.delete(tabId);
+  return null;
 }
 
 async function getItems(): Promise<ExtensionCredential[]> {

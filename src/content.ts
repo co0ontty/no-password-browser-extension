@@ -1,10 +1,14 @@
 import type { ExtensionCredential, RuntimeMessage } from "./shared";
-import { generateTotp } from "./totp";
 
 const BUTTON_CLASS = "np-fill-button";
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const CONFIRM_SAVE_MESSAGE = "Save this login to NoPassword?";
+
+let lastFilledCredential: Pick<ExtensionCredential, "username" | "password"> | null = null;
 
 mountFillButtons();
 document.addEventListener("submit", captureSubmittedCredential, true);
+void promptForStagedCredential();
 
 function mountFillButtons() {
   const fillTargets = [
@@ -39,6 +43,7 @@ async function fillForm(input: HTMLInputElement) {
   const usernameInput = findUsernameInput(form);
   if (usernameInput) setInputValue(usernameInput, item.username);
   if (passwordInput) setInputValue(passwordInput, item.password);
+  lastFilledCredential = { username: item.username, password: item.password };
   await fillOtpInputs(form, item);
 }
 
@@ -48,17 +53,35 @@ function captureSubmittedCredential(event: Event) {
   const passwordInput = form.querySelector<HTMLInputElement>("input[type='password']");
   if (!passwordInput?.value) return;
   const usernameInput = findUsernameInput(form);
+  const username = usernameInput?.value ?? "";
+  const password = passwordInput.value;
+
+  if (lastFilledCredential?.username === username && lastFilledCredential.password === password) return;
 
   const item: ExtensionCredential = {
     id: crypto.randomUUID(),
     title: document.title || location.hostname,
-    username: usernameInput?.value ?? "",
-    password: passwordInput.value,
-    url: location.origin,
+    username,
+    password,
+    url: `${location.origin}${location.pathname}`,
     updatedAt: Date.now(),
   };
 
-  void sendMessage({ type: "SAVE_CREDENTIAL", item });
+  void sendMessage({ type: "STAGE_CREDENTIAL", item });
+}
+
+async function promptForStagedCredential() {
+  const response = await sendMessage<{ item: ExtensionCredential | null }>({
+    type: "GET_STAGED_CREDENTIAL",
+    url: location.href,
+  }).catch(() => null);
+  const item = response?.item;
+  if (!item) return;
+
+  if (window.confirm(CONFIRM_SAVE_MESSAGE)) {
+    await sendMessage({ type: "SAVE_CREDENTIAL", item });
+  }
+  await sendMessage({ type: "DISCARD_STAGED_CREDENTIAL", id: item.id });
 }
 
 function findUsernameInput(root: ParentNode): HTMLInputElement | null {
@@ -106,6 +129,83 @@ function setInputValue(input: HTMLInputElement, value: string) {
 
 function sendMessage<T>(message: RuntimeMessage): Promise<T> {
   return chrome.runtime.sendMessage(message) as Promise<T>;
+}
+
+async function generateTotp(value: string, now = Date.now()): Promise<{ code: string; remaining: number } | null> {
+  const secret = extractOtpSecret(value);
+  if (!secret) return null;
+
+  const keyBytes = decodeBase32(secret);
+  if (keyBytes.length === 0) return null;
+
+  const step = 30;
+  const counter = Math.floor(now / 1000 / step);
+  const remaining = step - (Math.floor(now / 1000) % step);
+  const counterBytes = new ArrayBuffer(8);
+  new DataView(counterBytes).setBigUint64(0, BigInt(counter));
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    toArrayBuffer(keyBytes),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const hmac = new Uint8Array(await crypto.subtle.sign("HMAC", key, counterBytes));
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const binary =
+    ((hmac[offset] & 0x7f) << 24) |
+    ((hmac[offset + 1] & 0xff) << 16) |
+    ((hmac[offset + 2] & 0xff) << 8) |
+    (hmac[offset + 3] & 0xff);
+
+  return {
+    code: String(binary % 1_000_000).padStart(6, "0"),
+    remaining,
+  };
+}
+
+function extractOtpSecret(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol === "otpauth:") {
+      return sanitizeBase32(url.searchParams.get("secret") ?? "");
+    }
+  } catch {
+    // Plain Base32 secrets are expected here.
+  }
+
+  return sanitizeBase32(trimmed);
+}
+
+function sanitizeBase32(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z2-7]/g, "");
+}
+
+function decodeBase32(value: string): Uint8Array {
+  const bits: number[] = [];
+  for (const char of value.replace(/=+$/g, "")) {
+    const index = BASE32_ALPHABET.indexOf(char);
+    if (index === -1) continue;
+    for (let bit = 4; bit >= 0; bit -= 1) {
+      bits.push((index >> bit) & 1);
+    }
+  }
+
+  const bytes = [];
+  for (let index = 0; index + 8 <= bits.length; index += 8) {
+    bytes.push(bits.slice(index, index + 8).reduce((byte, bit) => (byte << 1) | bit, 0));
+  }
+  return new Uint8Array(bytes);
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
 }
 
 const style = document.createElement("style");
