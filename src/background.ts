@@ -1,9 +1,12 @@
 import {
+  ActiveTabContext,
+  DEFAULT_SETTINGS,
   ExtensionCredential,
   ExtensionSettings,
   RuntimeMessage,
   STORAGE_ITEMS_KEY,
   STORAGE_SETTINGS_KEY,
+  hostFromUrl,
   itemMatchesUrl,
   sortItemsForUrl,
 } from "./shared";
@@ -14,24 +17,12 @@ chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.local.get([STORAGE_ITEMS_KEY, STORAGE_SETTINGS_KEY]).then((result) => {
     if (!result[STORAGE_ITEMS_KEY]) {
       void chrome.storage.local.set({
-        [STORAGE_ITEMS_KEY]: [
-          {
-            id: crypto.randomUUID(),
-            title: "GitHub",
-            username: "alex@example.com",
-            password: "Z8q!uQ4p@qN7vL2s",
-            otpSecret: "JBSWY3DPEHPK3PXP",
-            url: "https://github.com",
-            updatedAt: Date.now(),
-          },
-        ],
+        [STORAGE_ITEMS_KEY]: [],
       });
     }
     if (!result[STORAGE_SETTINGS_KEY]) {
       void chrome.storage.local.set({
-        [STORAGE_SETTINGS_KEY]: {
-          serverUrl: "http://127.0.0.1:8080",
-        },
+        [STORAGE_SETTINGS_KEY]: DEFAULT_SETTINGS,
       });
     }
   });
@@ -51,6 +42,8 @@ async function handleMessage(message: RuntimeMessage, sender: chrome.runtime.Mes
     case "UPSERT_ITEM":
     case "SAVE_CREDENTIAL":
       return { items: await upsertItem(message.item) };
+    case "DELETE_ITEM":
+      return { items: await deleteItem(message.id) };
     case "STAGE_CREDENTIAL":
       return { item: stageCredential(message.item, sender) };
     case "GET_STAGED_CREDENTIAL":
@@ -61,10 +54,14 @@ async function handleMessage(message: RuntimeMessage, sender: chrome.runtime.Mes
       const items = await getItems();
       return { items: sortItemsForUrl(items, message.url) };
     }
+    case "GET_ACTIVE_TAB_CONTEXT":
+      return { context: await getActiveTabContext() };
+    case "FILL_ACTIVE_TAB":
+      return fillActiveTab(message.itemId);
     case "GET_SETTINGS":
       return { settings: await getSettings() };
     case "SAVE_SETTINGS":
-      return { settings: await saveSettings({ serverUrl: message.serverUrl }) };
+      return { settings: await saveSettings(message.settings) };
     case "PASSKEY_BRIDGE_STATUS":
       return {
         available: Boolean((chrome as unknown as { webAuthenticationProxy?: unknown }).webAuthenticationProxy),
@@ -104,17 +101,101 @@ async function getItems(): Promise<ExtensionCredential[]> {
 
 async function upsertItem(item: ExtensionCredential): Promise<ExtensionCredential[]> {
   const items = await getItems();
-  const next = [item, ...items.filter((current) => current.id !== item.id)];
+  const normalized = normalizeCredential(item);
+  const existing =
+    items.find((current) => current.id === normalized.id) ??
+    items.find(
+      (current) =>
+        current.id !== normalized.id &&
+        usernamesMatch(current.username, normalized.username) &&
+        itemMatchesUrl(current, normalized.url),
+    );
+  const nextItem: ExtensionCredential = {
+    ...existing,
+    ...normalized,
+    id: existing?.id ?? normalized.id,
+    title: normalized.title || existing?.title || hostFromUrl(normalized.url) || "Login",
+    updatedAt: Date.now(),
+  };
+  const next = [nextItem, ...items.filter((current) => current.id !== nextItem.id)];
   await chrome.storage.local.set({ [STORAGE_ITEMS_KEY]: next });
   return next;
 }
 
+async function deleteItem(id: string): Promise<ExtensionCredential[]> {
+  const items = (await getItems()).filter((item) => item.id !== id);
+  await chrome.storage.local.set({ [STORAGE_ITEMS_KEY]: items });
+  return items;
+}
+
 async function getSettings(): Promise<ExtensionSettings> {
   const result = await chrome.storage.local.get(STORAGE_SETTINGS_KEY);
-  return (result[STORAGE_SETTINGS_KEY] ?? { serverUrl: "http://127.0.0.1:8080" }) as ExtensionSettings;
+  return normalizeSettings(result[STORAGE_SETTINGS_KEY]);
 }
 
 async function saveSettings(settings: ExtensionSettings): Promise<ExtensionSettings> {
-  await chrome.storage.local.set({ [STORAGE_SETTINGS_KEY]: settings });
-  return settings;
+  const next = normalizeSettings(settings);
+  await chrome.storage.local.set({ [STORAGE_SETTINGS_KEY]: next });
+  return next;
+}
+
+async function getActiveTabContext(): Promise<ActiveTabContext> {
+  const tab = await getActiveTab();
+  const url = tab?.url ?? "";
+  const title = tab?.title ?? "";
+  const canFill = /^https?:\/\//i.test(url);
+  const items = canFill ? sortItemsForUrl(await getItems(), url) : [];
+
+  return {
+    url,
+    title,
+    host: hostFromUrl(url),
+    canFill,
+    items,
+  };
+}
+
+async function fillActiveTab(itemId: string): Promise<{ ok: boolean }> {
+  const tab = await getActiveTab();
+  if (typeof tab?.id !== "number") throw new Error("No active tab available");
+
+  const item = (await getItems()).find((current) => current.id === itemId);
+  if (!item) throw new Error("Credential not found");
+
+  await chrome.tabs.sendMessage(tab.id, { type: "FILL_CREDENTIAL", item } satisfies RuntimeMessage);
+  return { ok: true };
+}
+
+async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
+}
+
+function normalizeSettings(value: unknown): ExtensionSettings {
+  const input = (value ?? {}) as Partial<ExtensionSettings>;
+  return {
+    ...DEFAULT_SETTINGS,
+    ...input,
+    serverUrl: input.serverUrl?.trim() || DEFAULT_SETTINGS.serverUrl,
+    offerFillAndSave: input.offerFillAndSave ?? DEFAULT_SETTINGS.offerFillAndSave,
+    showInlineMenu: input.showInlineMenu ?? DEFAULT_SETTINGS.showInlineMenu,
+  };
+}
+
+function normalizeCredential(item: ExtensionCredential): ExtensionCredential {
+  const url = item.url.trim();
+  return {
+    ...item,
+    id: item.id || crypto.randomUUID(),
+    title: item.title.trim(),
+    username: item.username.trim(),
+    password: item.password,
+    otpSecret: item.otpSecret?.trim(),
+    url,
+    updatedAt: item.updatedAt || Date.now(),
+  };
+}
+
+function usernamesMatch(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
 }

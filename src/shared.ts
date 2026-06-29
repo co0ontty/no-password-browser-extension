@@ -8,24 +8,44 @@ export type ExtensionCredential = {
   updatedAt: number;
 };
 
+export type ActiveTabContext = {
+  url: string;
+  title: string;
+  host: string;
+  canFill: boolean;
+  items: ExtensionCredential[];
+};
+
 export type RuntimeMessage =
   | { type: "GET_ALL" }
   | { type: "UPSERT_ITEM"; item: ExtensionCredential }
+  | { type: "DELETE_ITEM"; id: string }
   | { type: "GET_CREDENTIALS_FOR_URL"; url: string }
+  | { type: "GET_ACTIVE_TAB_CONTEXT" }
+  | { type: "FILL_ACTIVE_TAB"; itemId: string }
+  | { type: "FILL_CREDENTIAL"; item: ExtensionCredential }
   | { type: "SAVE_CREDENTIAL"; item: ExtensionCredential }
   | { type: "STAGE_CREDENTIAL"; item: ExtensionCredential }
   | { type: "GET_STAGED_CREDENTIAL"; url: string }
   | { type: "DISCARD_STAGED_CREDENTIAL"; id: string }
   | { type: "GET_SETTINGS" }
-  | { type: "SAVE_SETTINGS"; serverUrl: string }
+  | { type: "SAVE_SETTINGS"; settings: ExtensionSettings }
   | { type: "PASSKEY_BRIDGE_STATUS" };
 
 export type ExtensionSettings = {
   serverUrl: string;
+  offerFillAndSave: boolean;
+  showInlineMenu: boolean;
 };
 
 export const STORAGE_ITEMS_KEY = "np.extension.items";
 export const STORAGE_SETTINGS_KEY = "np.extension.settings";
+
+export const DEFAULT_SETTINGS: ExtensionSettings = {
+  serverUrl: "https://home.huniu.fun:8182",
+  offerFillAndSave: true,
+  showInlineMenu: true,
+};
 
 export function hostFromUrl(url: string): string {
   return parseUrlMatchParts(url)?.host ?? "";
